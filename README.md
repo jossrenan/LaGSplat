@@ -76,34 +76,134 @@ turn any silent fallback into an `ImportError`.
 
 ## Collisions
 
-The same pull-back that lets the model answer a push also lets it hit things.
-The centre of Gaussian `k` is affine in the latent, `mu_k(q) = mu_xy,k + J_k (q - mu_z,k)`
-with `J_k = Sigma_xz,k Sigma_zz,k^-1`, so its Jacobian is exact and constant.
-Rigid obstacles are placed in normalised image coordinates (`[0, 1]^2`, `y`
-pointing down); each Gaussian that penetrates one receives a Kelvin-Voigt
-penalty force `f_k` along the obstacle normal (plus optional regularised Coulomb
-friction), weighted by its presence at the current state, and the latent
-generalised force `Q = sum_k J_k^T f_k` enters the equations of motion before
-the mass solve. Background Gaussians have `J_k ~ 0` and transmit nothing.
+This extension is not part of the paper's results. The mechanism that lets the
+model answer a push also lets it collide with obstacles: rigid objects placed in
+the image push back on the Gaussians that enter them, and that push becomes a
+force on the latent state.
+
+![Free rollout (top) against a rollout with collisions (bottom)](docs/collision_demo.png)
+
+*Test scene drawn with the pure-torch rasterizer: a bar of 60 Gaussians that
+bends with the latent, under a damped-spring dynamics. Top row: without
+collisions, the bar goes through the wall (grey). Bottom row: with collisions,
+it stops at the wall (red) and swings back. The disc is never reached and has no
+effect.*
+
+### How it works
+
+1. **Contact points.** The centre of Gaussian `k` in the decoder's conditional
+   slice is affine in the latent:
+   `mu_k(q) = mu_xy,k + J_k (q - mu_z,k)`, with `J_k = Sigma_xz,k Sigma_zz,k^-1`.
+   Its Jacobian `J_k` is therefore exact and constant, so contact needs no
+   autograd through the decoder. Because the LNN runs in the whitened latent `u`,
+   it uses `J_k W_inv^T` instead.
+2. **Obstacles.** Each obstacle is a fixed rigid solid, given by its signed
+   distance `phi(x)` in normalised image coordinates (`[0, 1]^2`, `x` to the
+   right, `y` down). Available shapes are a half-plane, a disc and an
+   axis-aligned box.
+3. **Contact force.** Gaussian `k` has a radius `r_k`: its largest conditional
+   standard deviation, times `COLLISION_RADIUS_SCALE`. It penetrates by
+   `delta_k = max(0, r_k - phi(mu_k))` and receives a Kelvin-Voigt penalty along
+   the normal `n = grad phi`:
+   `f_n = max(0, k_c delta_k - c_c n . xdot_k)`, where `xdot_k = J_k qdot`. The
+   force never pulls the object towards the obstacle. Regularised Coulomb
+   friction can be added.
+4. **Presence weighting.** Each force is weighted by
+   `alpha_k w_z,k(q) / sum_j alpha_j w_z,j(q)`, the Gaussian's share of what is
+   visible at the current state. A Gaussian that is switched off at that state
+   touches nothing, and the stiffness does not depend on how many Gaussians the
+   decoder has.
+5. **Pull-back into the dynamics.** The latent generalised force
+   `Q = sum_k J_k^T f_k` is added to the right-hand side of the Euler-Lagrange
+   equations, before the mass solve. Background Gaussians do not move, so they
+   have `J_k ~ 0` and transmit nothing: only the moving part of the object is
+   pushed back.
+
+### What changed in the code
+
+| File | Change |
+|---|---|
+| `code/collisions.py` | new: the `HalfPlane`, `Disc` and `Box` obstacles, `parse_obstacle`, the `GaussianContact` force `Q(q, qdot)`, and `build_contact`, which reads its settings from the config |
+| `code/viz.py` | `simulate_rk4(..., collision=None)` adds `Q`, for all three integrators (`verlet`, `rk4`, `gen_alpha`) |
+| `code/models.py` | `LNN.accel(..., f_ext=None)`, so that the learned or curved mass path also receives the force |
+| `code/config.py` | new `COLLISION_*` settings, off by default |
+| `code/sim_collision.py` | new script: runs the free rollout and the rollout with contact from the same initial state and pressure, and writes them side by side to an MP4 with the obstacles drawn |
+
+### Usage
 
 ```bash
 cd code
 py sim_collision.py --config ../cases/krauss2026_2seg_npz/config.py \
     --lnn lnn_lr1e-3_c1_s1_500ep_seed0.pt --video scr_2seg_32x32_val20.npz \
     --sigma 1 --sigma-pressure 1 --cq-eps 1 \
-    --obstacle "disc:0.70,0.60,0.12"      # or "plane:px,py,nx,ny", "box:x0,y0,x1,y1"
+    --obstacle "disc:0.70,0.60,0.12"      # repeatable
 ```
 
-It renders the free rollout and the rollout with contact side by side
-(`collision.mp4` in the case's `checkpoints/`). Without `--obstacle`, a wall is
-placed half-way along the object's largest excursion so that contact happens.
-The contact is an explicit penalty: `COLLISION_SUBSTEPS` (default 4) integration
-steps per frame; raise it or lower `--stiffness` if contact tunnels or blows up.
-Programmatically, pass `collision=collisions.build_contact(decoder, whiten, obstacles)`
-to `viz.simulate_rk4`. Collisions are off by default (`COLLISION_OBSTACLES = []`)
-and do not change the published numbers. They are an inference-time extension:
-no contact was seen in training, so the response is what the learned
-Lagrangian predicts under an external force.
+The script writes `collision.mp4` (left: free, right: with contact) and a
+`.npz` holding the latent trajectories and penetrations to the case's
+`checkpoints/`. It also prints the largest penetration in pixels, with and
+without contact. Without `--obstacle`, it places a wall half-way along the
+object's largest movement, so that contact happens. Other options:
+`--start-sec`, `--horizon-sec` (3 s by default), `--no-pressure` for free
+oscillation, and `--stiffness`, `--damping`, `--friction`, `--radius-scale` and
+`--substeps`.
+
+Obstacle syntax, in image coordinates from 0 to 1:
+
+| Spec | Obstacle |
+|---|---|
+| `plane:px,py,nx,ny` | solid half-plane through `(px, py)`; `n` points towards free space |
+| `disc:cx,cy,r` | solid disc |
+| `box:x0,y0,x1,y1` | solid axis-aligned rectangle |
+
+From code:
+
+```python
+from collisions import build_contact
+contact = build_contact(decoder, whiten, ["plane:0.6,0,-1,0"])
+traj = simulate_rk4(lnn, z0, v0, n_steps, dt, pressure=p, collision=contact)
+```
+
+### Settings (`code/config.py`)
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `COLLISION_OBSTACLES` | `[]` | obstacle specs; empty means no contact |
+| `COLLISION_STIFFNESS` | `2e3` | penalty stiffness `k_c`, per unit of total presence |
+| `COLLISION_DAMPING` | `20` | normal damping `c_c` |
+| `COLLISION_FRICTION` | `0` | Coulomb coefficient (0 means frictionless sliding) |
+| `COLLISION_RADIUS_SCALE` | `1` | `r_k` in conditional standard deviations; 0 treats centres as points |
+| `COLLISION_MIN_PRESENCE` | `1e-3` | Gaussians with an opacity below this are ignored |
+| `COLLISION_SUBSTEPS` | `4` | integration steps per frame in `sim_collision.py` |
+
+### Validation
+
+These checks run without gsplat and without checkpoints, using the pure-torch
+decoder:
+
+- the contact centres and `J_k` match the decoder's own Schur-complement
+  computation, with whitening, and `J_k` matches an autograd Jacobian;
+- a point mass thrown at a wall bounces back with all three integrators, and
+  penetrates about 1.5 % of the image instead of passing through;
+- in the bending-bar scene above, the bar tip reaches `x = 0.737` without
+  collisions and `x = 0.593` with them (wall at 0.6). The largest penetration
+  drops from 5.2 px to 0.6 px, and the rendered mass behind the wall drops from
+  8.1 to 0.01;
+- with the real `LNN` class and the case config (learned mass, pressure
+  forcing), rollouts stay finite with every integrator, and contact changes the
+  trajectory.
+
+### Limits
+
+- The contact is an explicit penalty. It is stable while `omega_c dt < 2`. If
+  contact tunnels or blows up, raise `--substeps` or lower `--stiffness`. The
+  default stiffness has not been tuned on a trained checkpoint.
+- No contact was seen in training. The response is what the learned Lagrangian
+  predicts under an external force; it has not been checked against real
+  contact footage.
+- Contact is between the Gaussians and fixed obstacles only. Self-collision and
+  moving obstacles are not modelled.
+- Collisions are off by default and do not change the published numbers.
 
 ## Layout
 
