@@ -10,8 +10,10 @@ renders it with a Gaussian Splatting decoder whose primitives are explicit
 points `mu_k(q)` that move with the object. LaGSplat Contact uses those points
 as contact points. When a Gaussian enters an obstacle, it receives a penalty
 force `f_k`, and that force enters the equations of motion as the latent
-generalised force `Q = sum_k J_k^T f_k`. The filmed object then stops at walls
-and bounces off them, although no contact was ever seen in training.
+generalised force `Q = sum_k J_k^T f_k`. No contact needs to be seen in
+training: the response to the obstacle comes from the learned Lagrangian. So
+far this has been checked on a synthetic scene (below), not yet on a trained
+checkpoint of the real robot (see [Limits](#limits)).
 
 ![Free rollout (top) against a rollout with collisions (bottom)](docs/collision_demo.png)
 
