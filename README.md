@@ -74,6 +74,37 @@ compatible with gsplat checkpoints. It is there to read and run the code, not to
 reproduce the figures: set `DEC2PT_BACKEND = 'gsplat'` in the case config to
 turn any silent fallback into an `ImportError`.
 
+## Collisions
+
+The same pull-back that lets the model answer a push also lets it hit things.
+The centre of Gaussian `k` is affine in the latent, `mu_k(q) = mu_xy,k + J_k (q - mu_z,k)`
+with `J_k = Sigma_xz,k Sigma_zz,k^-1`, so its Jacobian is exact and constant.
+Rigid obstacles are placed in normalised image coordinates (`[0, 1]^2`, `y`
+pointing down); each Gaussian that penetrates one receives a Kelvin-Voigt
+penalty force `f_k` along the obstacle normal (plus optional regularised Coulomb
+friction), weighted by its presence at the current state, and the latent
+generalised force `Q = sum_k J_k^T f_k` enters the equations of motion before
+the mass solve. Background Gaussians have `J_k ~ 0` and transmit nothing.
+
+```bash
+cd code
+py sim_collision.py --config ../cases/krauss2026_2seg_npz/config.py \
+    --lnn lnn_lr1e-3_c1_s1_500ep_seed0.pt --video scr_2seg_32x32_val20.npz \
+    --sigma 1 --sigma-pressure 1 --cq-eps 1 \
+    --obstacle "disc:0.70,0.60,0.12"      # or "plane:px,py,nx,ny", "box:x0,y0,x1,y1"
+```
+
+It renders the free rollout and the rollout with contact side by side
+(`collision.mp4` in the case's `checkpoints/`). Without `--obstacle`, a wall is
+placed half-way along the object's largest excursion so that contact happens.
+The contact is an explicit penalty: `COLLISION_SUBSTEPS` (default 4) integration
+steps per frame; raise it or lower `--stiffness` if contact tunnels or blows up.
+Programmatically, pass `collision=collisions.build_contact(decoder, whiten, obstacles)`
+to `viz.simulate_rk4`. Collisions are off by default (`COLLISION_OBSTACLES = []`)
+and do not change the published numbers. They are an inference-time extension:
+no contact was seen in training, so the response is what the learned
+Lagrangian predicts under an external force.
+
 ## Layout
 
 ```

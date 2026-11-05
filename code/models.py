@@ -1785,11 +1785,11 @@ class LNN(nn.Module):
         """Résidu d'accélération courbe : r = q̈ − accel(q, q̇). q, v, a : (N, D)."""
         return a - self.accel(q, v, pressure)
 
-    def accel(self, q, v, pressure=None):
+    def accel(self, q, v, pressure=None, f_ext=None):
         """
         Accélération du système lagrangien COURBE (métrique dérivée du décodeur) :
 
-            q̈ = M̃(q)⁻¹ [ ∂L/∂q − (∂p/∂q)q̇ − C̃(q)q̇ + F_P ] ,   p = M̃(q)q̇ ,
+            q̈ = M̃(q)⁻¹ [ ∂L/∂q − (∂p/∂q)q̇ − C̃(q)q̇ + F_P + Q_ext ] ,   p = M̃(q)q̇ ,
 
         avec L = ½ q̇ᵀM̃(q)q̇ − V(q), C̃(q) = α·M̃(q) (Rayleigh prop. masse). La Coriolis
         (∂p/∂q)q̇ et le terme cinétique de ∂L/∂q sont obtenus par autograd à travers M̃(q).
@@ -1831,6 +1831,9 @@ class LNN(nn.Module):
         # forçage de pression : +F_P
         if pressure is not None:
             force = force + self.pressure_force(q_g, pressure)
+        # force généralisée extérieure (contact, poussée…) : +Q = Σ J_kᵀ f_k
+        if f_ext is not None:
+            force = force + f_ext
 
         # q̈ = M̃(q)⁻¹ · force   (résolution D×D). Plancher de masse (ridge) : évite la
         # singularité quand une seule gaussienne domine (M̂ rang-déficient, cf. doc §3.4/§5)

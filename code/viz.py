@@ -796,7 +796,8 @@ def initial_velocity(z_seq):
 
 def simulate_rk4(lnn, z0: torch.Tensor, v0: torch.Tensor,
                  n_steps: int, dt: float,
-                 pressure: torch.Tensor = None) -> torch.Tensor:
+                 pressure: torch.Tensor = None,
+                 collision=None) -> torch.Tensor:
     """
     Intègre l'équation de Lagrange dans l'espace normalisé.
 
@@ -820,8 +821,14 @@ def simulate_rk4(lnn, z0: torch.Tensor, v0: torch.Tensor,
     le temps de contact t* par bisection linéaire sur φ(z(t)), puis on
     intègre jusqu'à t*, applique le rebond, et continue avec dt - t*.
 
+    Collisions image (`collision`, cf. collisions.GaussianContact) : force
+    généralisée Q(q, q̇) = Σ_k J_kᵀ f_k des gaussiennes du décodeur contre des
+    obstacles fixes, ajoutée au second membre avant la résolution par la masse.
+    Pénalité explicite : réduire dt (sous-pas) si le contact est raide.
+
     z0, v0   : (D,)  conditions initiales dans l'espace normalisé
     pressure : (n_steps, n_c) ou None — pression par step (cf. get_sim_pressure)
+    collision: callable (q, q̇) → Q (D,) ou None — contact avec des obstacles
     Retourne z_traj : (n_steps, D)
     """
     import config
@@ -856,9 +863,12 @@ def simulate_rk4(lnn, z0: torch.Tensor, v0: torch.Tensor,
         with torch.enable_grad():
             # Métrique courbe dérivée du décodeur : physique = lnn.accel (Coriolis +
             # Rayleigh α·M̃ + pression inclus, source unique partagée avec le résidu).
+            Q = None if collision is None else collision(z.detach(), v.detach())
             if getattr(lnn, 'metric', None) is not None:
                 pin = None if p is None else p.unsqueeze(0)
-                return lnn.accel(z.unsqueeze(0), v.unsqueeze(0), pin).squeeze(0).detach()
+                fin = None if Q is None else Q.unsqueeze(0)
+                return lnn.accel(z.unsqueeze(0), v.unsqueeze(0), pin,
+                                 f_ext=fin).squeeze(0).detach()
             grad = lnn.dE_dz(z.unsqueeze(0)).squeeze(0)
             friction = torch.zeros_like(v)
             if getattr(lnn, 'Gamma', None) is not None:
@@ -875,6 +885,8 @@ def simulate_rk4(lnn, z0: torch.Tensor, v0: torch.Tensor,
             if p is not None:
                 # F_P = b(q)ᵀ P (même signe qu'au second membre EL d'entraînement)
                 a = a + lnn.pressure_force(z.unsqueeze(0), p.unsqueeze(0)).squeeze(0)
+            if Q is not None:
+                a = a + Q                       # contact : +Σ J_kᵀ f_k
             Minv = getattr(lnn, 'Minv', None)
             if Minv is not None:
                 a = Minv @ a

@@ -357,6 +357,22 @@ LNN_INTEGRATOR_LIVE = 'semi_implicit'
 # N'a d'effet que si LNN_ICNN=True ; repli automatique sur autograd sinon (ou si False).
 LNN_ANALYTIC_GRAD = True
 
+# ── Collisions avec des obstacles image (collisions.py, sim_collision.py) ─────
+# Obstacles rigides fixes, en coordonnées image normalisées [0,1]² (x → droite,
+# y → bas). Les centres des gaussiennes μ_k(q) sont repoussés par une pénalité de
+# Kelvin-Voigt, ramenée dans le latent par Q = Σ J_kᵀ f_k (cf. collisions.py).
+# Liste vide ⟹ aucun contact (comportement historique, chiffres publiés inchangés).
+#   'plane:px,py,nx,ny'  demi-plan solide, n vers l'espace libre
+#   'disc:cx,cy,r'       disque solide
+#   'box:x0,y0,x1,y1'    rectangle solide
+COLLISION_OBSTACLES    = []
+COLLISION_STIFFNESS    = 2e3    # k_c : raideur de pénalité (par unité de présence totale)
+COLLISION_DAMPING      = 20.0   # c_c : amortissement normal (f_n ≥ 0, ne colle jamais)
+COLLISION_FRICTION     = 0.0    # μ   : Coulomb régularisé (0 = glissement parfait)
+COLLISION_RADIUS_SCALE = 1.0    # r_k = scale · σ_max(Σ_cond,k) ; 0 = centres ponctuels
+COLLISION_MIN_PRESENCE = 1e-3   # α_k sous ce seuil : gaussienne ignorée
+COLLISION_SUBSTEPS     = 4      # sous-pas d'intégration par frame (pénalité explicite)
+
 # ── Fine-tuning du LNN par ROLLOUT (finetune_lnn_fixedae.py UNIQUEMENT) ───────
 # On part d'un LNN déjà entraîné sur la loss ODE (résidu FD, train_lnn_fixedae) et
 # on le raffine sur une loss de TRAJECTOIRE : MSE(rollout différentiable, q(t) vrai)
