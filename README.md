@@ -1,19 +1,25 @@
 # LaGSplat Contact
 
-**Collisions for LaGSplat.** This fork of
-[LaGSplat](https://github.com/LouenPottier/LaGSplat) (Louen Pottier,
-[arXiv:2608.16324](https://arxiv.org/abs/2608.16324)) lets an object learned
-from monocular video collide with rigid obstacles placed in the image.
+**Make a video-learned object collide with obstacles.** Place a wall, a disc
+or a box anywhere in the image, and the simulated object stops against it and
+swings back, instead of passing through.
 
-LaGSplat learns a Lagrangian dynamics in a low-dimensional latent `q` and
-renders it with a Gaussian Splatting decoder whose primitives are explicit
-points `mu_k(q)` that move with the object. LaGSplat Contact uses those points
-as contact points. When a Gaussian enters an obstacle, it receives a penalty
-force `f_k`, and that force enters the equations of motion as the latent
-generalised force `Q = sum_k J_k^T f_k`. No contact needs to be seen in
-training: the response to the obstacle comes from the learned Lagrangian. So
-far this has been checked on a synthetic scene (below), not yet on a trained
-checkpoint of the real robot (see [Limits](#limits)).
+LaGSplat Contact extends
+[LaGSplat](https://github.com/LouenPottier/LaGSplat) (Louen Pottier,
+[arXiv:2608.16324](https://arxiv.org/abs/2608.16324)). LaGSplat learns, from
+monocular video, how an object moves: a Lagrangian dynamics in a small latent
+state `q`, rendered by Gaussian Splatting. The decoder's Gaussians are explicit
+points `mu_k(q)` that move with the object, and this fork uses them as contact
+points:
+
+- a Gaussian that enters an obstacle is pushed back by a penalty force `f_k`;
+- the forces on all the Gaussians are mapped back to the latent as
+  `Q = sum_k J_k^T f_k`, which enters the equations of motion;
+- the object's reaction then comes from the dynamics learned from the video.
+  No contact has to be filmed or labelled for training.
+
+Status: validated on a synthetic scene (below). The contact parameters have not
+yet been tuned on a trained checkpoint of the real robot (see [Limits](#limits)).
 
 ![Free rollout (top) against a rollout with collisions (bottom)](docs/collision_demo.png)
 
