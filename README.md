@@ -1,85 +1,17 @@
-# LaGSplat
+# LaGSplat Contact
 
-**LaGSplat: Inferring Physics-Governed Interactive Simulation from Monocular
-Video Using Latent Lagrangian Gaussian Splatting**
-Louen Pottier. Preprint: **[arXiv:2608.16324](https://arxiv.org/abs/2608.16324)**.
+**Collisions for LaGSplat.** This fork of
+[LaGSplat](https://github.com/LouenPottier/LaGSplat) (Louen Pottier,
+[arXiv:2608.16324](https://arxiv.org/abs/2608.16324)) lets an object learned
+from monocular video collide with rigid obstacles placed in the image.
 
-LaGSplat infers interactive, physics-governed dynamics from one or a few
-monocular videos. A low-dimensional latent state `q` plays two roles at once: it
-is the generalised coordinate of a learned dissipative Lagrangian, and the
-conditioning variable of a Gaussian Splatting decoder. Because the primitives of
-that decoder are explicit points `mu_i(q)` that move with the object, a force `f`
-applied anywhere in the image pulls back into a latent generalised force
-`J(q)^T f` and enters the equations of motion, which pixel-space or neural-field
-decoders cannot do. At inference the filmed object answers a push that was never
-measured, annotated or seen during training.
-
-This repository reproduces **one result of the paper**: the multi-step
-prediction on the **two-segment** soft continuum robot of Krauss et al. 2026,
-evaluated on their data and their split. The other experiments of the paper are
-not part of it.
-
-## Results
-
-Two segments, four chambers. MSE in pixels of `[0, 1]`, native 32 x 32 rendering.
-
-| Model | d | AE floor (1e-5) | MSE 0.5 s (1e-3) | freq. error |
-|---|---:|---:|---:|---:|
-| Osc. + deconv | 10 | 5.43 | 22.7 | 76.8 % |
-| Osc. + ABCD (VON) | 10 | 14.5 | 6.56 | 31.4 % |
-| Koopman + deconv | 10 | 3.95 | 5.66 | 18.3 % |
-| Koopman + ABCD | 10 | 5.17 | 0.984 | 8.3 % |
-| **LaGSplat** | **4** | 6.31 | **0.696** | **3.9 %** |
-
-Only the LaGSplat row is produced here. The baseline MSE values are the ones
-published by the authors; their AE floors and frequency errors are our own
-measurements on their released checkpoints. The frequency error compares a free
-rollout to the video over the depressurised tail of the clip, with the same
-spectral estimator on both: 1.5621 Hz observed against 1.5016 Hz held. Section 4
-of the preprint defines the metrics.
-
-## Operating point
-
-| | value |
-|---|---|
-| Data | `scr_dataset_raw_2seg_32x32_59fps.npz` (Zenodo, `processed_data.zip`) |
-| Images | 32 x 32 RGB, 59.94 fps (`DT = 1001/60000`) |
-| Pressures | `p1..p4` from the NPZ, aligned by the authors, normalised by 101 325 Pa |
-| Split | first 80 % train, last 20 % validation, contiguous (43 872 / 10 968 frames) |
-| Latent | `d = 4`, frozen PCA whitening after the autoencoder |
-| Decoder | 6D Gaussian Splatting (2 spatial + 4 latent dimensions) primitives rasterized with gsplat, 2048 Gaussians |
-| LNN | learned mass `M(q)`, full dissipation `C(q)`, invex deformation potential, invex pressure forcing |
-| LNN training | `lr 1e-3`, `c0 = 1`, `sigma 1`, 500 epochs, seed 0, frozen AE |
-
-## Quick start
-
-```bash
-py -m pip install -r requirements.txt        # read the file: torch and gsplat first
-
-py scripts/fetch_data.py --seg 2seg          # Zenodo, SHA256 check, 80/20 split
-
-py scripts/run_2seg_npz.py                   # the whole protocol
-py scripts/run_2seg_npz.py --dry-run         # print the commands without running them
-py scripts/run_2seg_npz.py --only 5          # the MSE evaluation alone
-```
-
-The protocol is six steps: autoencoder, frozen PCA whitening of the latent,
-visibility metric of the decoder, LNN, then the two evaluations. Steps 1 and 4
-take several GPU hours. `fetch_data.py --zip <path>` avoids re-downloading the
-4.5 GB Zenodo archive if it is already on the machine.
-
-`gsplat` needs CUDA and a compilation step. Without it the code falls back on an
-in-house pure-torch decoder, about 100 times slower and **not** weight
-compatible with gsplat checkpoints. It is there to read and run the code, not to
-reproduce the figures: set `DEC2PT_BACKEND = 'gsplat'` in the case config to
-turn any silent fallback into an `ImportError`.
-
-## Collisions
-
-This extension is not part of the paper's results. The mechanism that lets the
-model answer a push also lets it collide with obstacles: rigid objects placed in
-the image push back on the Gaussians that enter them, and that push becomes a
-force on the latent state.
+LaGSplat learns a Lagrangian dynamics in a low-dimensional latent `q` and
+renders it with a Gaussian Splatting decoder whose primitives are explicit
+points `mu_k(q)` that move with the object. LaGSplat Contact uses those points
+as contact points. When a Gaussian enters an obstacle, it receives a penalty
+force `f_k`, and that force enters the equations of motion as the latent
+generalised force `Q = sum_k J_k^T f_k`. The filmed object then stops at walls
+and bounces off them, although no contact was ever seen in training.
 
 ![Free rollout (top) against a rollout with collisions (bottom)](docs/collision_demo.png)
 
@@ -89,7 +21,29 @@ collisions, the bar goes through the wall (grey). Bottom row: with collisions,
 it stops at the wall (red) and swings back. The disc is never reached and has no
 effect.*
 
-### How it works
+## Quick start
+
+Collisions run at inference time on a trained LaGSplat model. The first
+commands train that model, on the two-segment soft continuum robot of Krauss et
+al. 2026 (see [Base model](#base-model)):
+
+```bash
+py -m pip install -r requirements.txt        # read the file: torch and gsplat first
+py scripts/fetch_data.py --seg 2seg          # Zenodo, SHA256 check, 80/20 split
+py scripts/run_2seg_npz.py                   # trains the base model (several GPU hours)
+```
+
+Then roll it out against obstacles:
+
+```bash
+cd code
+py sim_collision.py --config ../cases/krauss2026_2seg_npz/config.py \
+    --lnn lnn_lr1e-3_c1_s1_500ep_seed0.pt --video scr_2seg_32x32_val20.npz \
+    --sigma 1 --sigma-pressure 1 --cq-eps 1 \
+    --obstacle "disc:0.70,0.60,0.12"      # repeatable
+```
+
+## How it works
 
 1. **Contact points.** The centre of Gaussian `k` in the decoder's conditional
    slice is affine in the latent:
@@ -119,25 +73,7 @@ effect.*
    have `J_k ~ 0` and transmit nothing: only the moving part of the object is
    pushed back.
 
-### What changed in the code
-
-| File | Change |
-|---|---|
-| `code/collisions.py` | new: the `HalfPlane`, `Disc` and `Box` obstacles, `parse_obstacle`, the `GaussianContact` force `Q(q, qdot)`, and `build_contact`, which reads its settings from the config |
-| `code/viz.py` | `simulate_rk4(..., collision=None)` adds `Q`, for all three integrators (`verlet`, `rk4`, `gen_alpha`) |
-| `code/models.py` | `LNN.accel(..., f_ext=None)`, so that the learned or curved mass path also receives the force |
-| `code/config.py` | new `COLLISION_*` settings, off by default |
-| `code/sim_collision.py` | new script: runs the free rollout and the rollout with contact from the same initial state and pressure, and writes them side by side to an MP4 with the obstacles drawn |
-
-### Usage
-
-```bash
-cd code
-py sim_collision.py --config ../cases/krauss2026_2seg_npz/config.py \
-    --lnn lnn_lr1e-3_c1_s1_500ep_seed0.pt --video scr_2seg_32x32_val20.npz \
-    --sigma 1 --sigma-pressure 1 --cq-eps 1 \
-    --obstacle "disc:0.70,0.60,0.12"      # repeatable
-```
+## Usage
 
 The script writes `collision.mp4` (left: free, right: with contact) and a
 `.npz` holding the latent trajectories and penetrations to the case's
@@ -164,7 +100,7 @@ contact = build_contact(decoder, whiten, ["plane:0.6,0,-1,0"])
 traj = simulate_rk4(lnn, z0, v0, n_steps, dt, pressure=p, collision=contact)
 ```
 
-### Settings (`code/config.py`)
+## Settings (`code/config.py`)
 
 | Key | Default | Meaning |
 |---|---:|---|
@@ -176,7 +112,20 @@ traj = simulate_rk4(lnn, z0, v0, n_steps, dt, pressure=p, collision=contact)
 | `COLLISION_MIN_PRESENCE` | `1e-3` | Gaussians with an opacity below this are ignored |
 | `COLLISION_SUBSTEPS` | `4` | integration steps per frame in `sim_collision.py` |
 
-### Validation
+## What this fork changes
+
+| File | Change |
+|---|---|
+| `code/collisions.py` | new: the `HalfPlane`, `Disc` and `Box` obstacles, `parse_obstacle`, the `GaussianContact` force `Q(q, qdot)`, and `build_contact`, which reads its settings from the config |
+| `code/viz.py` | `simulate_rk4(..., collision=None)` adds `Q`, for all three integrators (`verlet`, `rk4`, `gen_alpha`) |
+| `code/models.py` | `LNN.accel(..., f_ext=None)`, so that the learned or curved mass path also receives the force |
+| `code/config.py` | new `COLLISION_*` settings, off by default |
+| `code/sim_collision.py` | new script: runs the free rollout and the rollout with contact from the same initial state and pressure, and writes them side by side to an MP4 with the obstacles drawn |
+
+Collisions are off by default (`COLLISION_OBSTACLES = []`): with no
+obstacle, the code computes exactly what upstream LaGSplat computes.
+
+## Validation
 
 These checks run without gsplat and without checkpoints, using the pure-torch
 decoder:
@@ -193,7 +142,7 @@ decoder:
   forcing), rollouts stay finite with every integrator, and contact changes the
   trajectory.
 
-### Limits
+## Limits
 
 - The contact is an explicit penalty. It is stable while `omega_c dt < 2`. If
   contact tunnels or blows up, raise `--substeps` or lower `--stiffness`. The
@@ -203,12 +152,68 @@ decoder:
   contact footage.
 - Contact is between the Gaussians and fixed obstacles only. Self-collision and
   moving obstacles are not modelled.
-- Collisions are off by default and do not change the published numbers.
+
+## Base model
+
+The base model, its training protocol and its numbers are those of
+upstream LaGSplat. They reproduce one result of the paper: multi-step
+prediction on the two-segment soft continuum robot of Krauss et al. 2026,
+on their data and their split. This fork does not change them.
+
+### Results
+
+Two segments, four chambers. MSE in pixels of `[0, 1]`, native 32 x 32 rendering.
+
+| Model | d | AE floor (1e-5) | MSE 0.5 s (1e-3) | freq. error |
+|---|---:|---:|---:|---:|
+| Osc. + deconv | 10 | 5.43 | 22.7 | 76.8 % |
+| Osc. + ABCD (VON) | 10 | 14.5 | 6.56 | 31.4 % |
+| Koopman + deconv | 10 | 3.95 | 5.66 | 18.3 % |
+| Koopman + ABCD | 10 | 5.17 | 0.984 | 8.3 % |
+| **LaGSplat** | **4** | 6.31 | **0.696** | **3.9 %** |
+
+Only the LaGSplat row is produced here. The baseline MSE values are the ones
+published by the authors; their AE floors and frequency errors are our own
+measurements on their released checkpoints. The frequency error compares a free
+rollout to the video over the depressurised tail of the clip, with the same
+spectral estimator on both: 1.5621 Hz observed against 1.5016 Hz held. Section 4
+of the preprint defines the metrics.
+
+### Operating point
+
+| | value |
+|---|---|
+| Data | `scr_dataset_raw_2seg_32x32_59fps.npz` (Zenodo, `processed_data.zip`) |
+| Images | 32 x 32 RGB, 59.94 fps (`DT = 1001/60000`) |
+| Pressures | `p1..p4` from the NPZ, aligned by the authors, normalised by 101 325 Pa |
+| Split | first 80 % train, last 20 % validation, contiguous (43 872 / 10 968 frames) |
+| Latent | `d = 4`, frozen PCA whitening after the autoencoder |
+| Decoder | 6D Gaussian Splatting (2 spatial + 4 latent dimensions) primitives rasterized with gsplat, 2048 Gaussians |
+| LNN | learned mass `M(q)`, full dissipation `C(q)`, invex deformation potential, invex pressure forcing |
+| LNN training | `lr 1e-3`, `c0 = 1`, `sigma 1`, 500 epochs, seed 0, frozen AE |
+
+### Training protocol
+
+The protocol is six steps: autoencoder, frozen PCA whitening of the latent,
+visibility metric of the decoder, LNN, then the two evaluations. Steps 1 and 4
+take several GPU hours. `fetch_data.py --zip <path>` avoids re-downloading the
+4.5 GB Zenodo archive if it is already on the machine.
+
+`gsplat` needs CUDA and a compilation step. Without it the code falls back on an
+in-house pure-torch decoder, about 100 times slower and **not** weight
+compatible with gsplat checkpoints. It is there to read and run the code, not to
+reproduce the figures: set `DEC2PT_BACKEND = 'gsplat'` in the case config to
+turn any silent fallback into an `ImportError`.
+
+Individual steps: `py scripts/run_2seg_npz.py --dry-run` prints the commands,
+and `--only 5` runs the MSE evaluation alone.
 
 ## Layout
 
 ```
 code/            the LaGSplat implementation, and code/config.py, the base config
+  collisions.py      obstacles and the contact force Q = sum_k J_k^T f_k
+  sim_collision.py   free rollout vs. rollout with contact, as a video
 cases/krauss2026_2seg_npz/
                  config.py of the case, overriding only what it changes;
                  data/ and checkpoints/ are produced locally
@@ -240,6 +245,8 @@ third parties require a separate written licence from the holder (CEA). No
 patent licence is granted. Third-party data keeps its own terms, see above.
 
 ## Cite this work
+
+LaGSplat Contact is built on LaGSplat. If you use it, cite the LaGSplat preprint:
 
 ```bibtex
 @article{pottier2026lagsplat,
